@@ -29,6 +29,15 @@ Auth: MCP_TOKEN — via ?token=, Authorization: Bearer, or x-mcp-token.
   /jobs/<job_id>/upload require the token.
   Never put the token in a repo. Set it as an env var.
 Download: GET /files/<job_id>?token=... — Content-Disposition: attachment.
+  FAST DOWNLOADS (v2.1.0, GitHub CDN): the localhost.run tunnel is too
+  slow for video files (~4 KB/s), so finished outputs are also pushed
+  to the public GitHub repo Chirag862/muse-remote-queue under
+  outputs/<job_id>.<ext>. When a job has "github_url" set (by
+  upload_to_github.py, run by the fulfiller after fulfilment),
+  download_output / job_status return that raw.githubusercontent.com
+  link instead of the tunnel /files/ link — same file, fast CDN.
+  The tunnel then only carries small MCP JSON, which it handles fine.
+  /files/ stays as the fallback when no github_url is recorded yet.
 
 Render / remote-fulfiller endpoints (added for the Render-free deploy):
   GET  /queue — list of jobs with status "queued" (oldest first), for
@@ -80,7 +89,7 @@ OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 MCP_TOKEN = os.environ.get("MCP_TOKEN", "")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 SERVER_NAME = "muse-remote"
-SERVER_VERSION = "2.0.0"
+SERVER_VERSION = "2.1.0"
 
 mcp = FastMCP(SERVER_NAME)
 
@@ -126,7 +135,17 @@ def _save_job(job: dict) -> None:
     _job_path(job["job_id"]).write_text(json.dumps(job, indent=2))
 
 
-def _download_url(job_id: str) -> str:
+def _download_url(job_id: str, job: dict | None = None) -> str:
+    # Fast path: finished file already on the public GitHub repo
+    # (raw.githubusercontent.com CDN) — prefer it over the slow tunnel.
+    if job is None:
+        try:
+            job = _load_job(job_id)
+        except Exception:
+            job = {}
+    gh = (job or {}).get("github_url")
+    if gh:
+        return gh
     base = PUBLIC_BASE_URL
     if not base:
         port = os.environ.get("PORT", "8000")
@@ -147,7 +166,7 @@ def _status_text(job: dict) -> str:
     lines.append(f"created_at: {job['created_at']}")
     if job["status"] == "done" and job.get("output_file"):
         lines.append(f"output_file: {job['output_file']}")
-        lines.append(f"download_url: {_download_url(job['job_id'])}")
+        lines.append(f"download_url: {_download_url(job['job_id'], job)}")
     if job["status"] == "failed" and job.get("error"):
         lines.append(f"error: {job['error']}")
     if job["status"] in ("queued", "running"):
@@ -216,8 +235,9 @@ def download_output(job_id: str) -> str:
 
     Returns the link only when status is done. If the job is still
     queued/running, it says so — poll job_status(job_id) instead.
-    The link is GET /files/<job_id>?token=... with
-    Content-Disposition: attachment, so it downloads directly.
+    When the file was pushed to the public GitHub repo, the link is
+    the fast raw.githubusercontent.com URL; otherwise it is
+    GET /files/<job_id>?token=... (tunnel, slow for big files).
     """
     job = _load_job(job_id)
     if job["status"] != "done" or not job.get("output_file"):
@@ -235,7 +255,7 @@ def download_output(job_id: str) -> str:
         f"Download ready.\n"
         f"job_id: {job_id}\n"
         f"file: {job['output_file']}\n"
-        f"download_url: {_download_url(job_id)}"
+        f"download_url: {_download_url(job_id, job)}"
     )
 
 
@@ -395,7 +415,7 @@ async def upload_job_output(request: Request):
     job["output_file"] = dest_name
     _save_job(job)
     return JSONResponse({"ok": True, "job_id": job_id,
-                         "download_url": _download_url(job_id)})
+                         "download_url": _download_url(job_id, job)})
 
 
 mcp_app = mcp.streamable_http_app()
