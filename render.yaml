@@ -1,0 +1,29 @@
+# Render free web service for muse-remote-mcp v2.
+# Deploy: push this folder to a GitHub repo, then in the Render dashboard:
+#   New -> Web Service -> pick the repo -> Render reads this file.
+#   Set PUBLIC_BASE_URL to the service URL Render gives you after the
+#   first deploy (e.g. https://muse-remote.onrender.com), then redeploy.
+# No card needed on the free plan. 512 MB RAM, sleeps after 15 min idle
+# (first request after sleep takes ~1 min to wake the service).
+# NOTE: Render's disk is ephemeral — jobs/ and outputs/ are lost on
+# restart/redeploy. The fulfiller (this Muse agent) keeps local copies
+# of every finished file and re-uploads via POST /jobs/<id>/upload.
+# Render sets PORT automatically; server.py reads it (default 8000).
+services:
+  - type: web
+    name: muse-remote
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      - key: MCP_TOKEN
+        generateValue: true
+      - key: PUBLIC_BASE_URL
+        # TODO: replace with your real Render URL after first deploy,
+        # e.g. https://muse-remote.onrender.com — then redeploy so
+        # download links point at the public URL.
+        value: https://muse-remote.onrender.com
+      - key: PYTHONUNBUFFERED
+        value: "1"
